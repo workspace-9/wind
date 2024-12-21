@@ -19,6 +19,7 @@ fn main() -> Result<()> {
     let (conn, screen_num) = x11rb::connect(None)?;
     let screen = &conn.setup().roots[screen_num];
     become_wm(&conn, screen).expect("failed elevating to window manager");
+    info!("elevated to window manager");
     let mut wm_state = WmState::new(&conn, screen_num)?;
     wm_state.scan_windows()?;
 
@@ -137,6 +138,7 @@ impl<'a, C: Connection> WmState<'a, C> {
         self.conn.change_save_set(SetMode::INSERT, win)?;
         let cookie = self.conn.reparent_window(win, frame_win, 0, TITLEBAR_HEIGHT.try_into()?)?;
         self.conn.map_window(win)?;
+        self.conn.map_window(frame_win)?;
         self.conn.ungrab_server()?;
         self.windows.push(WindowState::new(win, frame_win, geom));
         self.sequences_to_ignore.push(Reverse(cookie.sequence_number().try_into()?));
@@ -176,7 +178,7 @@ impl<'a, C: Connection> WmState<'a, C> {
     }
 
     fn refresh(&mut self) {
-        while let Some(&win) = self.pending_expose.iter().next() {
+        for &win in self.pending_expose.iter() {
             if let Some(state) = self.window_by_id(win) {
                 if let Err(err) = self.draw_titlebar(state) {
                     warn!("Failed redrawing window {:x?} {:?}", state.window, err);
@@ -222,24 +224,25 @@ impl<'a, C: Connection> WmState<'a, C> {
     }
 
     fn handle_unmap_notify(&mut self, ev: UnmapNotifyEvent) -> Result<()> {
+        debug!("handle unmap notifiy");
         let root = self.conn.setup().roots[self.screen_num].root;
-        let conn = self.conn;
         for state in self.windows.iter() {
             if state.window != ev.window {
                 continue;
             }
 
-            conn.change_save_set(SetMode::DELETE, state.window)?;
-            conn.reparent_window(state.window, root, state.x, state.y)?;
-            conn.destroy_window(state.frame_window)?;
+            self.conn.change_save_set(SetMode::DELETE, state.window)?;
+            self.conn.reparent_window(state.window, root, state.x, state.y)?;
+            self.conn.destroy_window(state.frame_window)?;
         }
         self.windows.retain(|state| state.window != ev.window);
         Ok(())
     }
 
     fn handle_configure_request(&mut self, ev: ConfigureRequestEvent) -> Result<()> {
+        debug!("handle configure request");
         if self.window_by_id(ev.window).is_some() {
-            warn!("unimplemented feature");
+            warn!("configure request for windows owned by wm not implemented");
             return Ok(());
         }
 
@@ -252,6 +255,7 @@ impl<'a, C: Connection> WmState<'a, C> {
     }
 
     fn handle_map_request(&mut self, ev: MapRequestEvent) -> Result<()> {
+        debug!("handle map request");
         self.manage_window(
             ev.window,
             &self.conn.get_geometry(ev.window)?.reply()?,
@@ -259,11 +263,13 @@ impl<'a, C: Connection> WmState<'a, C> {
     }
 
     fn handle_expose(&mut self, ev: ExposeEvent) -> Result<()> {
+        debug!("handle expose");
         self.pending_expose.insert(ev.window);
         return Ok(());
     }
 
     fn handle_enter_notify(&mut self, ev: EnterNotifyEvent) -> Result<()> {
+        debug!("handle enter notify");
         if let Some(state) = self.window_by_id(ev.event) {
             self.conn.set_input_focus(InputFocus::PARENT, state.window, CURRENT_TIME)?;
             self.conn.configure_window(
@@ -275,6 +281,7 @@ impl<'a, C: Connection> WmState<'a, C> {
     }
 
     fn handle_button_press(&mut self, ev: ButtonPressEvent) -> Result<()> {
+        debug!("handle button press");
         if ev.detail != DRAG_BUTTON || u16::from(ev.state) != 0 {
             return Ok(());
         }
@@ -290,6 +297,7 @@ impl<'a, C: Connection> WmState<'a, C> {
     }
 
     fn handle_button_release(&mut self, ev: ButtonReleaseEvent) -> Result<()> {
+        debug!("handle button release");
         if ev.detail == DRAG_BUTTON {
             self.drag_window = None;
         }
@@ -310,6 +318,7 @@ impl<'a, C: Connection> WmState<'a, C> {
     }
 
     fn handle_motion_notify(&mut self, ev: MotionNotifyEvent) -> Result<()> {
+        debug!("handle motion notify");
         if let Some((wind, (x, y))) = self.drag_window {
             let (x, y) = (x + ev.root_x, y + ev.root_y);
             self.conn.configure_window(wind, &ConfigureWindowAux::new().x(x as i32).y(y as i32))?;
