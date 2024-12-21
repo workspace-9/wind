@@ -1,0 +1,11 @@
+[package]
+name = "wind_rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.94"
+log = "0.4.22"
+simplelog = "0.12.2"
+thiserror = "2.0.8"
+x11rb = "0.13.1"
