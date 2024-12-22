@@ -61,7 +61,6 @@ struct WmState<'a, C: Connection> {
     wm_protocols: Atom,
     wm_delete_window: Atom,
     sequences_to_ignore: BinaryHeap<Reverse<u16>>,
-    drag_window: Option<(Window, (i16, i16))>,
 }
 
 impl<'a, C: Connection> WmState<'a, C> {
@@ -89,7 +88,6 @@ impl<'a, C: Connection> WmState<'a, C> {
             wm_protocols: wm_protocols.reply()?.atom,
             wm_delete_window: wm_delete_window.reply()?.atom,
             sequences_to_ignore: BinaryHeap::new(),
-            drag_window: None,
         })
     }
 
@@ -126,7 +124,9 @@ impl<'a, C: Connection> WmState<'a, C> {
                 EventMask::BUTTON_PRESS |
                 EventMask::BUTTON_RELEASE |
                 EventMask::POINTER_MOTION |
-                EventMask::ENTER_WINDOW,
+                EventMask::ENTER_WINDOW |
+                EventMask::KEY_PRESS |
+                EventMask::KEY_RELEASE,
             )
             .background_pixel(screen.white_pixel);
         self.conn.create_window(
@@ -251,7 +251,36 @@ impl<'a, C: Connection> WmState<'a, C> {
             self.conn.destroy_window(state.frame_window)?;
         }
         self.windows.retain(|state| state.window != ev.window);
+        self.relayout(None)?;
         Ok(())
+    }
+
+    fn relayout(&mut self, add_win: Option<ConfigureRequestEvent>) -> Result<()> {
+        let screen = &self.conn.setup().roots[self.screen_num];
+        let n_windows = (self.windows.len() + if add_win.is_some() {1} else {0}) as u32;
+        let float_width = f64::from(screen.width_in_pixels) / f64::from(n_windows);
+        for (idx, win) in self.windows.iter().enumerate() {
+            let win_x = float_width * f64::from(idx as u32);
+            let next_win_x = float_width * f64::from((idx+1) as u32);
+            let aux = ConfigureWindowAux::new()
+                .x(win_x as i32)
+                .width((next_win_x as u32) - (win_x as u32));
+            self.conn.configure_window(win.frame_window, &aux)?;
+        }
+
+        if let Some(ev) = add_win {
+            let win_x = float_width * f64::from(n_windows-1);
+            let final_width = screen.width_in_pixels - 1;
+            let aux = ConfigureWindowAux::from_configure_request(&ev)
+                .sibling(None)
+                .stack_mode(None)
+                .x(win_x as i32)
+                .width((final_width as u32) - (win_x as u32));
+            debug!("{:?}", aux.height);
+            self.conn.configure_window(ev.window, &aux)?;
+        }
+
+        return Ok(())
     }
 
     fn handle_configure_request(&mut self, ev: ConfigureRequestEvent) -> Result<()> {
@@ -262,29 +291,7 @@ impl<'a, C: Connection> WmState<'a, C> {
         }
 
         // build screens in horizontal stack.
-        let screen = &self.conn.setup().roots[self.screen_num];
-        debug!("requested height: {}", ev.height);
-        debug!("target height: {}", screen.height_in_pixels - TITLEBAR_HEIGHT);
-        let n_windows = (self.windows.len() + 1) as u32;
-        let float_width = f64::from(screen.width_in_pixels) / f64::from(n_windows);
-        for (idx, win) in self.windows.iter().enumerate() {
-            let win_x = float_width * f64::from(idx as u32);
-            let next_win_x = float_width * f64::from((idx+1) as u32);
-            let aux = ConfigureWindowAux::new()
-                .x(win_x as i32)
-                .width((next_win_x as u32) - (win_x as u32));
-            self.conn.configure_window(win.frame_window, &aux)?;
-        }
-        let win_x = float_width * f64::from(n_windows-1);
-        let final_width = screen.width_in_pixels - 1;
-        let aux = ConfigureWindowAux::from_configure_request(&ev)
-            .sibling(None)
-            .stack_mode(None)
-            .x(win_x as i32)
-            .width((final_width as u32) - (win_x as u32));
-        debug!("{:?}", aux.height);
-        self.conn.configure_window(ev.window, &aux)?;
-        debug!("configuring window {}, {:?}", ev.window, aux);
+        self.relayout(Some(ev))?;
         return Ok(());
     }
 
@@ -315,49 +322,14 @@ impl<'a, C: Connection> WmState<'a, C> {
     }
 
     fn handle_button_press(&mut self, ev: ButtonPressEvent) -> Result<()> {
-        debug!("handle button press");
-        if ev.detail != DRAG_BUTTON || u16::from(ev.state) != 0 {
-            return Ok(());
-        }
-
-        if let Some(state) = self.window_by_id(ev.event) {
-            if self.drag_window.is_none() && ev.event_x < state.close_x_position() {
-                let (x, y) = (-ev.event_x, -ev.event_y);
-                self.drag_window = Some((state.frame_window, (x, y)));
-            }
-        }
-
-        return Ok(());
+        Ok(())
     }
 
     fn handle_button_release(&mut self, ev: ButtonReleaseEvent) -> Result<()> {
-        debug!("handle button release");
-        if ev.detail == DRAG_BUTTON {
-            self.drag_window = None;
-        }
-
-        if let Some(state) = self.window_by_id(ev.event) {
-            if ev.event_x >= state.close_x_position() {
-                let event = ClientMessageEvent::new(
-                    32,
-                    state.window,
-                    self.wm_protocols,
-                    [self.wm_delete_window, 0, 0, 0, 0],
-                );
-                self.conn.send_event(false, state.window, EventMask::NO_EVENT, event)?;
-            }
-        }
-
         Ok(())
     }
 
     fn handle_motion_notify(&mut self, ev: MotionNotifyEvent) -> Result<()> {
-        debug!("handle motion notify");
-        if let Some((wind, (x, y))) = self.drag_window {
-            let (x, y) = (x + ev.root_x, y + ev.root_y);
-            self.conn.configure_window(wind, &ConfigureWindowAux::new().x(x as i32).y(y as i32))?;
-        }
-
         Ok(())
     }
 }
