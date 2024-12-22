@@ -1,7 +1,8 @@
 use std::collections::{HashSet, BinaryHeap};
 use std::cmp::Reverse;
+use std::thread::sleep;
 use simplelog::*;
-use log::{info, warn, error, debug};
+use log::{info, warn, error, debug, trace};
 use x11rb::{
     CURRENT_TIME,
     connection::Connection, 
@@ -25,16 +26,22 @@ fn main() -> Result<()> {
 
     loop {
         wm_state.refresh();
+        debug!("refreshed wm_state");
         conn.flush()?;
+        trace!("flushed conn");
 
         let event = conn.wait_for_event()?;
+        debug!("next event");
         let mut event_option = Some(event);
         while let Some(event) = event_option {
+            debug!("handling event");
             if let Err(err) = wm_state.handle_event(event) {
                 error!("Failed handling event: {err}");
             }
+            debug!("polling for event");
             event_option = conn.poll_for_event()?;
         }
+        trace!("finished polling");
     }
 }
 
@@ -111,6 +118,7 @@ impl<'a, C: Connection> WmState<'a, C> {
         }
 
         let frame_win = self.conn.generate_id()?;
+        debug!("created frame {frame_win}");
         let win_aux = CreateWindowAux::new()
             .event_mask(
                 EventMask::EXPOSURE |
@@ -128,18 +136,24 @@ impl<'a, C: Connection> WmState<'a, C> {
             geom.x,
             geom.y,
             geom.width,
-            geom.height + TITLEBAR_HEIGHT,
+            screen.height_in_pixels,
             1,
             WindowClass::INPUT_OUTPUT,
             0,
             &win_aux,
         )?;
+        self.conn.configure_window(win, &ConfigureWindowAux::new()
+            .height((screen.height_in_pixels - TITLEBAR_HEIGHT) as u32)
+        )?;
+        trace!("waiting to grab server");
         self.conn.grab_server()?;
+        trace!("grabbed server");
         self.conn.change_save_set(SetMode::INSERT, win)?;
         let cookie = self.conn.reparent_window(win, frame_win, 0, TITLEBAR_HEIGHT.try_into()?)?;
         self.conn.map_window(win)?;
         self.conn.map_window(frame_win)?;
         self.conn.ungrab_server()?;
+        trace!("freed server");
         self.windows.push(WindowState::new(win, frame_win, geom));
         self.sequences_to_ignore.push(Reverse(cookie.sequence_number().try_into()?));
         Ok(())
@@ -178,6 +192,7 @@ impl<'a, C: Connection> WmState<'a, C> {
     }
 
     fn refresh(&mut self) {
+        trace!("refresh");
         for &win in self.pending_expose.iter() {
             if let Some(state) = self.window_by_id(win) {
                 if let Err(err) = self.draw_titlebar(state) {
@@ -246,11 +261,30 @@ impl<'a, C: Connection> WmState<'a, C> {
             return Ok(());
         }
 
+        // build screens in horizontal stack.
+        let screen = &self.conn.setup().roots[self.screen_num];
+        debug!("requested height: {}", ev.height);
+        debug!("target height: {}", screen.height_in_pixels - TITLEBAR_HEIGHT);
+        let n_windows = (self.windows.len() + 1) as u32;
+        let float_width = f64::from(screen.width_in_pixels) / f64::from(n_windows);
+        for (idx, win) in self.windows.iter().enumerate() {
+            let win_x = float_width * f64::from(idx as u32);
+            let next_win_x = float_width * f64::from((idx+1) as u32);
+            let aux = ConfigureWindowAux::new()
+                .x(win_x as i32)
+                .width((next_win_x as u32) - (win_x as u32));
+            self.conn.configure_window(win.frame_window, &aux)?;
+        }
+        let win_x = float_width * f64::from(n_windows-1);
+        let final_width = screen.width_in_pixels - 1;
         let aux = ConfigureWindowAux::from_configure_request(&ev)
             .sibling(None)
-            .stack_mode(None);
-        debug!("configuring window {}, {:?}", ev.window, aux);
+            .stack_mode(None)
+            .x(win_x as i32)
+            .width((final_width as u32) - (win_x as u32));
+        debug!("{:?}", aux.height);
         self.conn.configure_window(ev.window, &aux)?;
+        debug!("configuring window {}, {:?}", ev.window, aux);
         return Ok(());
     }
 
