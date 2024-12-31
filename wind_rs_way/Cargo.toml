@@ -1,0 +1,15 @@
+[package]
+name = "wind_rs_way"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bitflags = "2.6.0"
+tracing = { version = "0.1.41", features = ["max_level_error", "release_max_level_debug"]}
+tracing-subscriber = "0.3.19"
+
+[dependencies.smithay]
+git = "https://github.com/Smithay/smithay.git"
+rev = "5186cf7dec2472a91e3c248772954b1141dab7f2"
+default-features = false
+features = ["backend_winit", "wayland_frontend", "desktop"]
